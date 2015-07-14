@@ -39,8 +39,9 @@ from matplotlib.backends.backend_wx import NavigationToolbar2Wx
 from matplotlib.figure import Figure
 
 from opendaq import DAQ
+from opendaq.daq import *
 
-
+EXPERIMENTS = [None] * 4
 #-----------------------------------------------------------------------------
 # Find available serial ports.
 # INPUTS:
@@ -120,9 +121,7 @@ class ComThread (threading.Thread):
         self.running = 1
         self.x = [[], [], [], []]
         self.y = [[], [], [], []]
-        self.data_packet = []
         self.delay = self.thread_sleep = 1
-        self.ch = []
 
     def stop(self):
         self.streaming = 0
@@ -135,7 +134,6 @@ class ComThread (threading.Thread):
         self.init_time = time.time()
         self.x = [[], [], [], []]
         self.y = [[], [], [], []]
-        self.data_packet = []
         self.frame.set_voltage(0.8)
         self.streaming = 1
         self.count = 0
@@ -158,64 +156,26 @@ class ComThread (threading.Thread):
         frame = self.frame
         self.running = 1
         self.stopping = self.streaming = 0
-        self.data_packet = []
         while self.running:
             time.sleep(self.thread_sleep)
             if self.streaming:
-                self.data_packet = []
-                self.ch = []
-                ret = self.frame.daq.get_stream(self.data_packet, self.ch)
-                if ret == 0:
-                    continue
-                if ret == 2:
-                    # Write information comming from OpenDaq
-                    self.debug = ''.join(map(chr, self.data_packet))
-                    self.data_packet = []
-                    while True:
-                        ret = frame.daq.get_stream(self.data_packet, self.ch)
-                        if ret == 0:
-                            break
-                        if ret == 2:
-                            self.debug += ''.join(map(chr, self.data_packet))
-                            self.data_packet = []
-                        if ret == 3:
-                            # Experiment stopped by Odaq
-                            frame.stop_channel(self.ch[0])
-                        if ret == 1:
-                            break
-                    if ret != 1:
-                        continue
-                if ret == 3:
-                    frame.stop_channel(self.ch[0])
-                self.count += 1
                 self.current_time = time.time()
                 self.dif_time = self.current_time-self.init_time
-                for i in range(len(self.data_packet)):
-                    data_int = self.data_packet[i]
-                    if frame.hw_ver == "s" and frame.p.ch_2[self.ch[0]] != 0:
-                        multiplier_array = (1, 2, 4, 5, 8, 10, 16, 20)
-                        data_int /= (
-                            multiplier_array[frame.p.range[self.ch[0]]])
-                    if frame.hw_ver == "m":
-                        gain = -frame.gains[frame.p.range[self.ch[0]]+1]
-                        offset = frame.offset[frame.p.range[self.ch[0]]+1]
-                    if frame.hw_ver == "s":
-                        index_1 = frame.p.ch_1[self.ch[0]]
-                        if frame.p.ch_2[self.ch[0]] != 0:
-                            index_1 += 8
-                        gain = frame.gains[index_1]
-                        offset = frame.offset[index_1]
-                    data = self.transform_data(float(data_int * gain)) + offset
-                    self.delay = frame.p.rate[self.ch[0]]/1000.0
-                    self.time = self.delay * len(self.x[self.ch[0]])
-                    if frame.p.extern_flag[self.ch[0]] == 1:
-                        self.y[self.ch[0]].append(self.dif_time)
-                    else:
-                        self.y[self.ch[0]].append(self.time)
-                    self.x[self.ch[0]].append(float(data))
+                
+                for i in range(4):
+                    if(
+                            EXPERIMENTS[i] is not None
+                            and EXPERIMENTS[i].get_mode() == ANALOG_INPUT):
+                        new_data = EXPERIMENTS[i].read()
+                        for d in new_data:
+                            self.delay = frame.p.rate[i]/1000.0
+                            self.time = self.delay * len(self.x[i])
+                            if frame.p.extern_flag[i] == 1:
+                                self.y[i].append(self.dif_time)
+                            else:
+                                self.y[i].append(self.time)
+                            self.x[i].append(float(d))
             if self.stopping:
-                self.data_packet = []
-                self.ch = []
                 frame.daq.flush()
                 self.stopping = 0
                 while True:
@@ -231,24 +191,8 @@ class ComThread (threading.Thread):
                         time.sleep(0.2)
                         frame.daq.flush()
                         pass
-                for i in range(len(self.data_packet)):
-                    data_int = self.data_packet[i]
-                    if frame.hw_ver == "m":
-                        gain = -frame.gains[frame.p.range[self.ch[i]]+1]
-                        offset = frame.offset[frame.p.range[self.ch[i]]+1]
-                    if frame.hw_ver == "s":
-                        index_1 = frame.p.ch_1[self.ch[i]]
-                        if frame.p.ch_2[self.ch[i]] != 0:
-                            index_1 += 8
-                        gain = frame.gains[index_1]
-                        offset = frame.offset[index_1]
-                    data_int = (
-                        self.transform_data(data_int * gain) +
-                        frame.offset[frame.p.range[self.ch[i]]])
-                    self.delay = frame.p.rate[self.ch[i]]/1000.0
-                    self.time = self.delay * len(self.x[self.ch[i]])
-                    self.x[self.ch[i]].append(float(data_int))
-                    self.y[self.ch[i]].append(self.time)
+                for i in range(4):
+                    EXPERIMENTS[i] = None
                 wx.CallAfter(pub.sendMessage, "stop")
                 self.stopping = 0
 
@@ -970,12 +914,13 @@ class InterfazPanel(wx.Panel):
             self.samples[index_1] = int(dlg.edit_samples.GetLineText(0))
             self.mode[index_1] = dlg.edit_mode.GetCurrentSelection()
             if self.mode[index_1] == 0:
-                self.num_point[index_1] = self.mode[index_1] = 0
+                self.num_point[index_1] = 0
+                self.mode[index_1] = True
             else:
                 self.num_point[index_1] = 20 * self.mode[index_1]
                 if self.mode[index_1] == 3:
                     self.num_point[index_1] = 100
-                self.mode[index_1] = 1
+                self.mode[index_1] = False
             dlg.Destroy()
 
     def play_event(self, event):
@@ -987,25 +932,37 @@ class InterfazPanel(wx.Panel):
                 self.channel.append(
                     [self.ch_1[i], self.ch_2[i], self.rate[i], self.range[i]])
                 if self.extern_flag[i] == 1:
-                    frame.daq.create_external(i+1, 0)
+                    experiment = frame.daq.create_external(
+                        mode=ANALOG_INPUT, clock_input=i+1, edge=0,
+                        npoints=self.num_point[i], continuous=self.mode[i])
                 else:
-                    frame.daq.create_stream(i+1, self.rate[i])
-                frame.daq.setup_channel(
-                    i+1, self.num_point[i], self.mode[i])
-                frame.daq.conf_channel(
-                    i+1, 0, self.ch_1[i], self.ch_2[i], self.range[i],
-                    self.samples[i])  # Analog input
+                    experiment = frame.daq.create_stream(
+                        mode=ANALOG_INPUT, period=self.rate[i],
+                        npoints=self.num_point[i], continuous=self.mode[i])
+    
+                experiment.analog_setup(
+                    pinput=self.ch_1[i], ninput=self.ch_2[i],
+                    gain=self.range[i], nsamples=self.samples[i])
+                    
+                #number = experiment.get_parameters()[3]
+                #EXPERIMENTS[number-1] = experiment
+                EXPERIMENTS[i] = experiment
+                
         if self.enable_check[4].GetValue():
+            position = 0
             if self.burst_mode_stream_out:
-                frame.daq.create_burst(self.interval * 100)
-                frame.daq.setup_channel(
-                    1, len(self.buffer), 0)  # Mode continuous
-                frame.daq.conf_channel(1, 1, 0, 0, 0, 0)  # Analog output
+                EXPERIMENTS[0] = frame.daq.create_burst(
+                    mode=ANALOG_OUTPUT, period=self.interval * 100,
+                    npoints=len(self.buffer), continuous=True)
+                EXPERIMENTS[0].analog_setup(
+                    pinput=0, ninput=0, gain=0, nsamples=0)
             else:
-                frame.daq.create_stream(4, self.interval)
-                frame.daq.setup_channel(
-                    4, len(self.buffer), 0)  # Mode continuous
-                frame.daq.conf_channel(4, 1, 0, 0, 0, 0)  # Analog output
+                position = 3
+                EXPERIMENTS[3] = frame.daq.create_stream(
+                    mode=ANALOG_OUTPUT, period=self.interval,
+                    npoints=len(self.buffer), continuous=True)
+                EXPERIMENTS[3].analog_setup(
+                    pinput=0, ninput=0, gain=0, nsamples=0)
             # Cut signal buffer into x length buffers
             x_length = 20
             num_buffers = len(self.buffer) / x_length
@@ -1013,11 +970,11 @@ class InterfazPanel(wx.Panel):
                 self.init = i * x_length
                 self.end = self.init + x_length
                 self.inter_buffer = self.buffer[self.init:self.end]
-                frame.daq.load_signal(self.inter_buffer, self.init)
+                EXPERIMENTS[position].load_signal(self.inter_buffer, self.init)
             self.init = num_buffers * x_length
             self.inter_buffer = self.buffer[self.init:]
             if len(self.inter_buffer) > 0:
-                frame.daq.load_signal(self.inter_buffer, self.init)
+                EXPERIMENTS[position].load_signal(self.inter_buffer, self.init)
         self.button_play.Enable(False)
         self.button_stop.Enable(True)
         self.frame.timer_thread.start_drawing()
@@ -1150,7 +1107,7 @@ class MainFrame(wx.Frame):
             self, None, title="EasyDAQ", style=wx.DEFAULT_FRAME_STYLE &
             ~(wx.RESIZE_BORDER | wx.RESIZE_BOX | wx.MAXIMIZE_BOX))
         self.colors = 'r', 'g', 'b', 'k'
-        self.daq = DAQ(com_port)
+        self.daq = DAQ(com_port, debug=True)
         self.hw_ver = self.daq.hw_ver
         if hasattr(sys, "frozen"):
             executable = sys.executable

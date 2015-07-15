@@ -42,7 +42,7 @@ from opendaq import DAQ
 from opendaq.daq import *
 
 EXPERIMENTS = [None] * 4
-#-----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # Find available serial ports.
 # INPUTS:
 # -Num_ports: Number of ports scanned. Default 20
@@ -51,7 +51,7 @@ EXPERIMENTS = [None] * 4
 # Returns:
 # A list with all ports found. Each list item
 # is a tuple with the number of the port and the device
-#-----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
 
 def scan(num_ports=20, verbose=True):
@@ -107,7 +107,6 @@ class TimerThread (threading.Thread):
 
     def run(self):
         while self.running:
-            #time.sleep(self.delay)
             time.sleep(1)
             if self.drawing:
                 wx.CallAfter(pub.sendMessage, "refresh")
@@ -153,19 +152,21 @@ class ComThread (threading.Thread):
             self.thread_sleep /= 2000.0
 
     def run(self):
+        running_2 = True
         frame = self.frame
         self.running = 1
         self.stopping = self.streaming = 0
         while self.running:
+            running_2 = False
             time.sleep(self.thread_sleep)
             if self.streaming:
                 self.current_time = time.time()
                 self.dif_time = self.current_time-self.init_time
-                
                 for i in range(4):
                     if(
-                            EXPERIMENTS[i] is not None
-                            and EXPERIMENTS[i].get_mode() == ANALOG_INPUT):
+                            EXPERIMENTS[i] is not None and
+                            EXPERIMENTS[i].get_mode() == ANALOG_INPUT):
+                        running_2 = True
                         new_data = EXPERIMENTS[i].read()
                         for d in new_data:
                             self.delay = frame.p.rate[i]/1000.0
@@ -175,22 +176,13 @@ class ComThread (threading.Thread):
                             else:
                                 self.y[i].append(self.time)
                             self.x[i].append(float(d))
+                if not frame.daq.is_measuring():
+                    frame.p.stop_event(None)
+
             if self.stopping:
-                frame.daq.flush()
+                frame.daq.stop_2()
                 self.stopping = 0
-                while True:
-                    try:
-                        frame.daq.stop()
-                        break
-                    except:
-                        if self.stopping > 1:
-                            frame.p.stopping_label.SetLabel(
-                                "Stopping... Please, wait")
-                        print "Error trying to stop. Retrying"
-                        self.stopping += 1
-                        time.sleep(0.2)
-                        frame.daq.flush()
-                        pass
+
                 for i in range(4):
                     EXPERIMENTS[i] = None
                 wx.CallAfter(pub.sendMessage, "stop")
@@ -400,15 +392,15 @@ class StreamDialog(wx.Dialog):
             frame.p.waveform == 1 and (self.amplitude + self.offset > 4000 or (
                 self.offset < -4000)) and self.hw_ver == "m")
         cond_2 = (
-            frame.p.waveform != 1 and self.amplitude + abs(self.offset) > 4000
-            and self.hw_ver == "m")
+            frame.p.waveform != 1 and
+            self.amplitude + abs(self.offset) > 4000 and self.hw_ver == "m")
 
         cond_3 = (
             frame.p.waveform == 0 and (self.amplitude + self.offset > 4000 or (
                 self.offset - self.amplitude < 0)) and self.hw_ver == "s")
         cond_4 = (frame.p.waveform != 0 and (
-            self.amplitude + self.offset > 4000 or self.offset < 0)
-            and self.hw_ver == "s")
+            self.amplitude + self.offset > 4000 or self.offset < 0) and
+            self.hw_ver == "s")
 
         if cond_1 or cond_2 or cond_3 or cond_4:
                 dlg = wx.MessageDialog(
@@ -739,7 +731,7 @@ class InterfazPanel(wx.Panel):
         main_sizer.Add(plot_sizer, 0, wx.ALL)
         self.SetSizerAndFit(main_sizer)
 
-        #Create publisher receiver
+        # Create publisher receiver
         pub.subscribe(self.refresh, "refresh")
         pub.subscribe(self.stop, "stop")
 
@@ -785,8 +777,7 @@ class InterfazPanel(wx.Panel):
                 except:
                     frame.daq.flush()
                     print "Error trying to destroy channel"
-                    frame.daq.close()
-                    frame.daq.open()
+
         frame.p.stopping_label.SetLabel("")
         frame.p.button_play.Enable(True)
 
@@ -939,15 +930,13 @@ class InterfazPanel(wx.Panel):
                     experiment = frame.daq.create_stream(
                         mode=ANALOG_INPUT, period=self.rate[i],
                         npoints=self.num_point[i], continuous=self.mode[i])
-    
+
                 experiment.analog_setup(
                     pinput=self.ch_1[i], ninput=self.ch_2[i],
                     gain=self.range[i], nsamples=self.samples[i])
-                    
-                #number = experiment.get_parameters()[3]
-                #EXPERIMENTS[number-1] = experiment
+
                 EXPERIMENTS[i] = experiment
-                
+
         if self.enable_check[4].GetValue():
             position = 0
             if self.burst_mode_stream_out:
@@ -1100,14 +1089,15 @@ class InterfazPanel(wx.Panel):
 
 
 class MainFrame(wx.Frame):
-    def __init__(self, com_port):
+    def __init__(self, com_port, my_app):
+        self.my_app = my_app
         self.comunication_thread = None
         self.timer_thread = None
         wx.Frame.__init__(
-            self, None, title="EasyDAQ", style=wx.DEFAULT_FRAME_STYLE &
-            ~(wx.RESIZE_BORDER | wx.RESIZE_BOX | wx.MAXIMIZE_BOX))
+            self, None, title="EasyDAQ", style=wx.DEFAULT_FRAME_STYLE & ~
+            (wx.RESIZE_BORDER | wx.RESIZE_BOX | wx.MAXIMIZE_BOX))
         self.colors = 'r', 'g', 'b', 'k'
-        self.daq = DAQ(com_port, debug=True)
+        self.daq = DAQ(com_port)
         self.hw_ver = self.daq.hw_ver
         if hasattr(sys, "frozen"):
             executable = sys.executable
@@ -1266,7 +1256,7 @@ def main():
     app = MyApp(False)
 
     if app.connected:
-        frame = MainFrame(app.com_port)
+        frame = MainFrame(app.com_port, app)
         comunication_thread = ComThread(frame)
         timer_thread = TimerThread(frame)
         frame.comunication_thread = comunication_thread
